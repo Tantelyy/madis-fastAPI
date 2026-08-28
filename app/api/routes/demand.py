@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import date
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Query, Request
+
+from app.api.routes.common import get_settings_and_bundle, run_prediction
 
 from app.api.schemas.demand import (
     DemandForecastBatchRequest,
@@ -14,57 +16,28 @@ from app.api.schemas.demand import (
     DemandModelInfoResponse,
     HealthResponse,
 )
-from app.config import ApiSettings
-from app.prediction.demand_predictor import (
-    DemandModelUnavailableError,
-    InsufficientHistoryError,
-    PredictionValidationError,
-    ProductNotFoundError,
-    UnknownModelProductError,
-    predict_demand,
-)
+from app.prediction.demand_predictor import predict_demand
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["Demand forecasting"])
 
 
-def _settings_and_bundle(request: Request):
-    settings: ApiSettings = request.app.state.settings
-    bundle = request.app.state.demand_model_bundle
-    if bundle is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Demand model is unavailable")
-    return settings, bundle
-
-
 def _forecast(request: Request, product_id: int, days: int, as_of_date: date | None) -> dict:
-    settings, bundle = _settings_and_bundle(request)
+    settings, bundle = get_settings_and_bundle(request)
     logger.info("Demand forecast requested: product_id=%s days=%s", product_id, days)
-    try:
-        return predict_demand(
+    return run_prediction(
+        lambda: predict_demand(
             product_id=product_id,
             forecast_days=days,
             as_of_date=as_of_date,
             synthetic_batch=settings.synthetic_batch,
             database_url=settings.database_url,
             model_bundle=bundle,
-        )
-    except ProductNotFoundError as error:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Product {product_id} not found") from error
-    except UnknownModelProductError as error:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Product has not been seen by the current demand model",
-        ) from error
-    except InsufficientHistoryError as error:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
-    except DemandModelUnavailableError as error:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Demand model is unavailable") from error
-    except PredictionValidationError as error:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
-    except Exception as error:
-        logger.exception("Unexpected demand forecast error for product_id=%s", product_id)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Demand forecast failed") from error
+        ),
+        product_id,
+        "demand forecast",
+    )
 
 
 @router.get("/health", response_model=HealthResponse, tags=["Health"])
@@ -74,7 +47,7 @@ def health(request: Request) -> dict[str, object]:
 
 @router.get("/demand/model-info", response_model=DemandModelInfoResponse)
 def model_info(request: Request) -> dict[str, object]:
-    _, bundle = _settings_and_bundle(request)
+    _, bundle = get_settings_and_bundle(request)
     metadata = bundle.metadata
     return {
         "modelName": metadata["modelName"],
