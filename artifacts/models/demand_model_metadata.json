@@ -1,0 +1,42 @@
+{
+  "modelName": "EXTRA_TREES_SMOOTH",
+  "trainedAt": "2026-08-28T09:50:00.666787+00:00",
+  "trainingStartDate": "2025-09-25",
+  "trainingEndDate": "2026-07-08",
+  "testStartDate": "2026-07-09",
+  "testEndDate": "2026-08-27",
+  "features": [
+    "productId",
+    "dayOfWeek",
+    "dayOfMonth",
+    "month",
+    "weekOfYear",
+    "isWeekend",
+    "lag1",
+    "lag7",
+    "lag14",
+    "lag28",
+    "rollingMean7",
+    "rollingMean14",
+    "rollingMean28",
+    "rollingStd7",
+    "rollingStd28",
+    "promotionActive"
+  ],
+  "hyperparameters": {
+    "n_estimators": 400,
+    "max_depth": 12,
+    "min_samples_leaf": 4,
+    "max_features": 0.7,
+    "n_jobs": 1,
+    "random_state": 42
+  },
+  "validationMAE": 1.074205513540464,
+  "testMAE": 1.2785693785737815,
+  "baselineValidationMAE": 1.1264239028944911,
+  "baselineTestMAE": 1.472190476190476,
+  "syntheticData": true,
+  "syntheticBatch": "[SYNTHETIC_DEMAND|v1|2025-08-28|2026-08-27|seed=42]",
+  "testWasUsedForTuning": false,
+  "selectionWasFrozenBeforeTest": true
+}
