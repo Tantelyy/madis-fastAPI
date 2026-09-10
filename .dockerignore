@@ -1,0 +1,13 @@
+.git
+.github
+.env*
+!.env.example
+.pytest_cache
+__pycache__
+*.py[cod]
+datasets
+reports
+artifacts/candidates
+.venv
+venv
+
