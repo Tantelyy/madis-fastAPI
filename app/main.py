@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.demand import router as demand_router
+from app.api.routes.stockout import router as stockout_router
 from app.config import ApiSettings
 from app.prediction.demand_predictor import DemandModelUnavailableError, load_deployment_model
 
@@ -52,6 +53,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
             allow_headers=["Content-Type"],
         )
     application.include_router(demand_router)
+    application.include_router(stockout_router)
     return application
 
 
