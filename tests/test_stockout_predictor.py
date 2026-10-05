@@ -1,19 +1,25 @@
 from __future__ import annotations
 
-from datetime import date, datetime
-from unittest.mock import patch
+from datetime import date, datetime, timedelta
+from unittest.mock import MagicMock, patch
 import unittest
 
+import pandas as pd
+
+from app.data.extractor import DateRange, build_daily_dataset
 from app.prediction.demand_predictor import (
+    DeploymentModelBundle,
     InsufficientHistoryError,
     PredictionValidationError,
     ProductNotFoundError,
+    predict_demand,
 )
 from app.prediction.stockout_predictor import (
     InventoryLotSnapshot,
     ProductStockSnapshot,
     calculate_lot_stock_projection,
     calculate_stock_projection,
+    get_available_stock,
     predict_stockout,
 )
 
@@ -34,6 +40,70 @@ def predictions(*demands: float) -> list[dict[str, object]]:
 
 
 class StockoutProjectionTestCase(unittest.TestCase):
+    def test_history_includes_zero_demand_when_no_recent_sale_exists(self) -> None:
+        period = DateRange(date(2026, 10, 4), date(2026, 10, 5))
+        with patch("app.data.extractor.load_daily_aggregates", return_value=({}, 0, 0)):
+            dataset = build_daily_dataset(MagicMock(), period, include_product=(52, "REF-52"))
+
+        self.assertEqual([row.demand_quantity for row in dataset.rows], [0, 0])
+        self.assertEqual(dataset.stats.total_demand_quantity, 0)
+
+    def test_default_forecast_starts_today_when_last_sale_is_old(self) -> None:
+        today = date.today()
+        model = MagicMock()
+        model.predict.return_value = [1.0]
+        bundle = DeploymentModelBundle(model, {"features": ["feature"], "modelName": "test"})
+        history = pd.DataFrame([{"date": today, "productId": 52, "productReference": "REF-52", "demandQty": 0}])
+        with patch("app.prediction.demand_predictor.get_active_product_reference", return_value="REF-52"), patch(
+            "app.prediction.demand_predictor._validate_product_seen_during_training"
+        ), patch(
+            "app.prediction.demand_predictor._load_product_history", return_value=history
+        ) as load_history, patch("app.prediction.demand_predictor.load_promotion_activity", return_value=pd.DataFrame()), patch(
+            "app.prediction.demand_predictor.create_future_feature_row", return_value={"feature": 1}
+        ):
+            forecast = predict_demand(
+                52, forecast_days=1, synthetic_batch="frozen-batch",
+                database_url="postgresql://read-only", model_bundle=bundle,
+            )
+
+        self.assertEqual(forecast["asOfDate"], today.isoformat())
+        self.assertEqual(load_history.call_args.args[3], today)
+
+    def test_current_stock_reads_remaining_quantity_without_historical_movements(self) -> None:
+        today = date.today()
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [(1, datetime.combine(today - timedelta(days=1), datetime.min.time()), None, 81)]
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        with patch("app.prediction.stockout_predictor.get_active_product_reference", return_value="REF-52"), patch(
+            "app.prediction.stockout_predictor.connect_read_only"
+        ) as connect:
+            connect.return_value.__enter__.return_value = connection
+            snapshot = get_available_stock(52, today, "postgresql://read-only")
+
+        self.assertEqual(snapshot.available_stock, 81.0)
+        query, parameters = cursor.execute.call_args.args
+        self.assertIn('inventory."remainingQuantity" AS available_quantity', query)
+        self.assertNotIn('JOIN "InventoryMovement"', query)
+        self.assertEqual(parameters[0], 52)
+
+    def test_historical_stock_still_uses_movements(self) -> None:
+        yesterday = date.today() - timedelta(days=1)
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [(1, datetime.combine(yesterday, datetime.min.time()), None, 86)]
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        with patch("app.prediction.stockout_predictor.get_active_product_reference", return_value="REF-52"), patch(
+            "app.prediction.stockout_predictor.connect_read_only"
+        ) as connect:
+            connect.return_value.__enter__.return_value = connection
+            snapshot = get_available_stock(52, yesterday, "postgresql://read-only")
+
+        self.assertEqual(snapshot.available_stock, 86.0)
+        query, parameters = cursor.execute.call_args.args
+        self.assertIn('JOIN "InventoryMovement"', query)
+        self.assertEqual(parameters[1], 52)
+
     def test_projection_has_no_stockout_when_supply_covers_forecast(self) -> None:
         result = calculate_stock_projection(100.0, predictions(5, 5, 5, 5, 5, 5, 10))
 
