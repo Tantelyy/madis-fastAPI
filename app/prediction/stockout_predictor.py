@@ -44,12 +44,11 @@ def get_available_stock(
     as_of_date: date | str,
     database_url: str | None = None,
 ) -> ProductStockSnapshot:
-    """Reconstruct sellable product stock at the end of an historical day.
+    """Read today's sellable stock or reconstruct it for a historical day.
 
-    Inventory is the lot table. For each lot existing by ``as_of_date``, the
-    balance is reconstructed from the persisted movement quantities, rather
-    than from today's ``remainingQuantity``. A lot is usable when its balance
-    is positive and it is not expired at this date-level end-of-day cutoff.
+    Inventory is the lot table. Today's balance comes from the persisted
+    ``remainingQuantity`` used by the sales dashboard. Historical balances are
+    reconstructed from movements. Expired lots are excluded from both views.
     """
     if not isinstance(product_id, int) or isinstance(product_id, bool) or product_id <= 0:
         raise StockUnavailableError("product_id doit être un entier strictement positif.")
@@ -63,41 +62,50 @@ def get_available_stock(
 
         raise ProductNotFoundError(f"Le produit actif {product_id} est introuvable.")
 
+    is_current_date = snapshot_date == date.today()
     end_exclusive = snapshot_date + timedelta(days=1)
-    query = '''
+    quantity_sql = (
+        'inventory."remainingQuantity"'
+        if is_current_date
+        else 'COALESCE(SUM(movement."incomingQuantity" - movement."outgoingQuantity"), 0)'
+    )
+    movement_join = '' if is_current_date else '''
+        LEFT JOIN "InventoryMovement" movement
+            ON movement."inventoryId" = inventory."ID"
+           AND movement."createdAt" < %s
+    '''
+    group_by = '' if is_current_date else '''
+        GROUP BY inventory."ID", inventory."createdAt", inventory."expiredAt"
+    '''
+    query = f'''
         SELECT
             inventory."ID",
             inventory."createdAt",
             inventory."expiredAt",
-            COALESCE(
-                SUM(movement."incomingQuantity" - movement."outgoingQuantity"),
-                0
-            ) AS reconstructed_quantity
+            {quantity_sql} AS available_quantity
         FROM "Inventories" inventory
         JOIN "Products" product ON product."ID" = inventory."productId"
-        LEFT JOIN "InventoryMovement" movement
-            ON movement."inventoryId" = inventory."ID"
-           AND movement."createdAt" < %s
+        {movement_join}
         WHERE inventory."productId" = %s
           AND product."deletedAt" IS NULL
           AND inventory."createdAt" < %s
-        GROUP BY inventory."ID", inventory."createdAt", inventory."expiredAt"
+        {group_by}
         ORDER BY inventory."createdAt", inventory."ID"
     '''
-    cutoff = datetime.combine(end_exclusive, time.min)
+    cutoff = datetime.now() if is_current_date else datetime.combine(end_exclusive, time.min)
     usable_lots: list[InventoryLotSnapshot] = []
     with connect_read_only(database_url) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(query, (cutoff, product_id, cutoff))
-            for inventory_id, created_at, expired_at, reconstructed_quantity in cursor.fetchall():
-                quantity = float(reconstructed_quantity)
+            parameters = (product_id, cutoff) if is_current_date else (cutoff, product_id, cutoff)
+            cursor.execute(query, parameters)
+            for inventory_id, created_at, expired_at, available_quantity in cursor.fetchall():
+                quantity = float(available_quantity)
                 if quantity < 0:
                     raise StockUnavailableError(
                         f"Le lot {inventory_id} du produit {product_id} a un stock historique négatif.",
                     )
-                # The Nest sales service accepts a lot while expiredAt >= now.
-                # At daily granularity, the snapshot is taken at the end of the
-                # requested date, represented by the next midnight cutoff.
+                # Today uses the current instant; historical dates use the
+                # next midnight as their end-of-day cutoff.
                 is_usable = quantity > 0 and (expired_at is None or expired_at >= cutoff)
                 if is_usable:
                     usable_lots.append(

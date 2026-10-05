@@ -172,6 +172,7 @@ def build_daily_dataset(
     connection: psycopg.Connection,
     period: DateRange,
     synthetic_batch: str | None = None,
+    include_product: tuple[int, str] | None = None,
 ) -> DemandDataset:
     """Create the complete product × date grid and fill missing demand with zero."""
     aggregates, total_sale, total_gift = load_daily_aggregates(
@@ -183,6 +184,8 @@ def build_daily_dataset(
         product_id: reference
         for (product_id, _), (reference, _, _) in aggregates.items()
     }
+    if include_product is not None:
+        references.setdefault(*include_product)
     if not references:
         raise DatasetValidationError(
             "Aucun mouvement SALE ou PROMOTION_GIFT ne correspond à la période demandée.",
@@ -213,6 +216,7 @@ def extract_demand_dataset(
     end_date: date | str,
     synthetic_batch: str | None = None,
     database_url: str | None = None,
+    include_product: tuple[int, str] | None = None,
 ) -> pd.DataFrame:
     """Return the validated daily demand dataset directly as a DataFrame.
 
@@ -225,7 +229,7 @@ def extract_demand_dataset(
     if not connection_string:
         raise ValueError("DATABASE_URL est obligatoire.")
     with connect_read_only(connection_string) as connection:
-        dataset = build_daily_dataset(connection, period, synthetic_batch)
+        dataset = build_daily_dataset(connection, period, synthetic_batch, include_product)
     return demand_dataset_to_dataframe(dataset)
 
 

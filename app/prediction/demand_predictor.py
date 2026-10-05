@@ -17,7 +17,6 @@ from app.data.extractor import (
     DatasetValidationError,
     extract_demand_dataset,
     get_active_product_reference,
-    get_latest_demand_date,
 )
 from app.features.demand_features import (
     MINIMUM_FORECAST_HISTORY_DAYS,
@@ -93,11 +92,10 @@ def predict_demand(
         raise ProductNotFoundError(f"Le produit actif {product_id} est introuvable.")
     _validate_product_seen_during_training(model, product_id)
 
-    latest_available_date = get_latest_demand_date(synthetic_batch, database_url)
-    effective_as_of = _coerce_date(as_of_date) if as_of_date is not None else latest_available_date
-    if effective_as_of > latest_available_date:
+    effective_as_of = _coerce_date(as_of_date) if as_of_date is not None else date.today()
+    if effective_as_of > date.today():
         raise PredictionValidationError(
-            f"as_of_date ({effective_as_of}) est postérieure à la dernière demande disponible ({latest_available_date}).",
+            f"as_of_date ({effective_as_of}) est postérieure à la date du jour.",
         )
 
     history_start = effective_as_of - timedelta(days=HISTORY_LOOKBACK_DAYS - 1)
@@ -201,6 +199,7 @@ def _load_product_history(
             end_date,
             synthetic_batch=synthetic_batch,
             database_url=database_url,
+            include_product=(product_id, expected_reference),
         )
     except DatasetValidationError as error:
         raise InsufficientHistoryError("Aucun historique de demande exploitable n'a été trouvé.") from error
